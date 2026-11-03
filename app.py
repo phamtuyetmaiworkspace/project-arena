@@ -457,6 +457,78 @@ def compute_results(server_id):
 
 
 # =========================
+# LIVE RESULTS (TEACHER ONLY)
+# =========================
+@st.fragment(run_every="2s")
+def live_results_panel(server_id):
+    """Read fresh data each refresh; no investment or student identities exposed."""
+    state = get_round(server_id)
+    category = state.get("current_category")
+    status = state.get("status", "SETUP")
+    categories = [category] if category in CATEGORIES else CATEGORIES
+
+    st.caption("Tự cập nhật mỗi 2 giây · Chỉ hiển thị trong Teacher Control Room")
+    if not category:
+        category = st.selectbox("Lĩnh vực theo dõi", CATEGORIES, key="live_category")
+        categories = [category]
+    st.markdown(f"**Vòng hiện tại:** {CATEGORY_LABELS.get(category, 'Chưa chọn')} · **{status}**")
+
+    if status == "OPEN" and state.get("updated_at"):
+        try:
+            opened = datetime.fromisoformat(state["updated_at"].replace("Z", "+00:00"))
+            elapsed = max(0, int((datetime.now(timezone.utc) - opened).total_seconds()))
+            remaining = max(0, 600 - elapsed)
+            st.metric("Thời gian đầu tư tham khảo", f"{remaining // 60:02d}:{remaining % 60:02d}")
+            if remaining == 0:
+                st.warning("Đã hết 10 phút dự kiến. Giảng viên cần nhấn CLOSE ROUND để khóa đầu tư.")
+        except (ValueError, TypeError):
+            pass
+
+    pdf, _ = compute_results(server_id)
+    if pdf.empty:
+        st.info("Chưa có dự án trong lớp này.")
+        return
+    current = pdf[pdf["Category"].isin(categories)].copy()
+    if current.empty:
+        st.info("Chưa có dự án trong lĩnh vực này.")
+        return
+    current = current.sort_values(["Funding", "Project"], ascending=[False, True])
+    total_capital = float(current["Funding"].sum())
+    active_investors = q("investments", "student_uuid,project_id,is_valid", server_id=server_id)
+    selected_ids = set(current["id"].tolist())
+    unique_investors = len({
+        x["student_uuid"] for x in active_investors
+        if x["project_id"] in selected_ids and x.get("is_valid", True)
+    })
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Tổng vốn huy động", f"{total_capital / 1_000_000:,.0f} triệu VND")
+    c2.metric("Số nhà đầu tư", unique_investors)
+    c3.metric("Số dự án", len(current))
+
+    show = st.toggle("Hiện bảng xếp hạng trên màn hình", value=False, key="live_reveal")
+    if not show:
+        st.info("Kết quả đang được ẩn. Bật công tắc sau khi đóng vòng để công bố.")
+        return
+
+    current.insert(0, "Rank", range(1, len(current) + 1))
+    current["Funding (triệu VND)"] = current["Funding"] / 1_000_000
+    st.dataframe(
+        current[["Rank", "Code", "Project", "Funding (triệu VND)", "Investors"]],
+        hide_index=True, use_container_width=True,
+    )
+    fig = px.bar(
+        current, x="Project", y="Funding (triệu VND)", text="Funding (triệu VND)",
+        hover_data=["Code", "Investors"],
+    )
+    fig.update_traces(texttemplate="%{text:,.0f}M", textposition="outside")
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", xaxis_title="", margin=dict(t=35),
+    )
+    st.plotly_chart(fig, use_container_width=True, key=f"live_chart_{server_id}_{category}")
+
+
+# =========================
 # TEACHER APP
 # =========================
 def teacher_app():
@@ -569,17 +641,8 @@ def teacher_app():
 
     # MONITOR
     with tabs[2]:
-        st.markdown("### Live investment monitor")
-        if not invs:
-            st.info("Chưa có giao dịch đầu tư.")
-        else:
-            pdf, idf = compute_results(server_id)
-            chart_df = pdf.copy()
-            chart_df["Funding (M)"] = chart_df["Funding"] / 1_000_000
-            fig = px.bar(chart_df.sort_values("Funding", ascending=False), x="Project", y="Funding (M)", hover_data=["Category","Investors"])
-            fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption("Chỉ Teacher thấy dữ liệu live. Không hiển thị cho sinh viên trong khi game diễn ra.")
+        st.markdown("### 📺 Live investment monitor")
+        live_results_panel(server_id)
 
     # RESULTS
     with tabs[3]:
