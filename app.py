@@ -636,7 +636,10 @@ def teacher_app():
                 student_choice = st.selectbox("Sinh viên", list(student_opts.keys()))
                 project_choice = st.selectbox("Nhóm", list(project_opts.keys()))
                 verified = st.checkbox("Đã xác minh thành viên thuộc nhóm này")
-                if st.form_submit_button("GÁN NHÓM", disabled=not verified):
+                if st.form_submit_button("GÁN NHÓM"):
+                    if not verified:
+                        st.error("Cần xác minh thành viên trước khi gán nhóm.")
+                        st.stop()
                     student_to_assign = student_opts[student_choice]
                     target = project_opts[project_choice]
                     require_db().table("students").update({"project_id": target["id"]}).eq(
