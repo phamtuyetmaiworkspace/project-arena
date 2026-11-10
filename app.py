@@ -491,6 +491,64 @@ def compute_results(server_id):
     return pd.DataFrame(project_rows), pd.DataFrame(investor_rows)
 
 
+def round_export_frames(server_id, category):
+    """Fresh, server-scoped export; invalid entries are retained and marked."""
+    projects = q("projects", "*", server_id=server_id, category=category)
+    pmap = {p["id"]: p for p in projects}
+    students = {s["id"]: s for s in q("students", "*", server_id=server_id)}
+    project_ids = set(pmap)
+    invs = [
+        x for x in q("investments", "*", server_id=server_id)
+        if x.get("project_id") in project_ids
+    ]
+    rows = []
+    for x in invs:
+        p = pmap[x["project_id"]]
+        student = students.get(x.get("student_uuid"), {})
+        rows.append({
+            "Lop": server_id,
+            "Linh vuc": CATEGORY_LABELS[category],
+            "Nhom": p["project_code"],
+            "Du an": p["project_name"],
+            "MSSV": student.get("student_id", ""),
+            "Ho ten": student.get("student_name", ""),
+            "So von (VND)": float(x.get("amount") or 0),
+            "Hop le": bool(x.get("is_valid", True)),
+            "Ly do khong hop le": x.get("invalid_reason") or "",
+            "Ly do dau tu": x.get("rationale") or "",
+            "Thoi gian tao": x.get("created_at") or "",
+            "Thoi gian cap nhat": x.get("updated_at") or "",
+        })
+    detail_columns = [
+        "Lop", "Linh vuc", "Nhom", "Du an", "MSSV", "Ho ten",
+        "So von (VND)", "Hop le", "Ly do khong hop le",
+        "Ly do dau tu", "Thoi gian tao", "Thoi gian cap nhat",
+    ]
+    detail = pd.DataFrame(rows, columns=detail_columns)
+    summary = []
+    for p in sorted(projects, key=lambda x: project_sort_key(server_id, x)):
+        valid = [
+            x for x in invs if x["project_id"] == p["id"] and x.get("is_valid", True)
+        ]
+        summary.append({
+            "Lop": server_id,
+            "Linh vuc": CATEGORY_LABELS[category],
+            "Nhom": p["project_code"],
+            "Du an": p["project_name"],
+            "Tong von hop le (VND)": sum(float(x.get("amount") or 0) for x in valid),
+            "So nha dau tu": len({x["student_uuid"] for x in valid}),
+            "So giao dich hop le": len(valid),
+        })
+    result = pd.DataFrame(summary)
+    if not result.empty:
+        result = result.sort_values(
+            ["Tong von hop le (VND)", "So nha dau tu", "Nhom"],
+            ascending=[False, False, True],
+        ).reset_index(drop=True)
+        result.insert(0, "Xep hang tam tinh", result.index + 1)
+    return detail, result
+
+
 # =========================
 # LIVE RESULTS (TEACHER ONLY)
 # =========================
@@ -722,6 +780,52 @@ def teacher_app():
             st.dataframe(pd.DataFrame(cat_projects)[["project_code","project_name","one_liner"]], hide_index=True, use_container_width=True)
         else:
             st.info("Chưa có dự án cho lĩnh vực này.")
+
+        st.divider()
+        st.markdown("### Tải dữ liệu sau mỗi vòng đầu tư")
+        closed_events = q("audit_logs", "action,details", server_id=server_id)
+        closed_categories = {
+            event.get("details", {}).get("category")
+            for event in closed_events
+            if event.get("action") == "CLOSE_ROUND" and isinstance(event.get("details"), dict)
+        }
+        is_current_closed = (
+            selected_cat == round_state.get("current_category")
+            and round_state.get("status") in ("CLOSED", "FINISHED")
+        )
+        has_closed_history = selected_cat in closed_categories
+        currently_open = (
+            selected_cat == round_state.get("current_category")
+            and round_state.get("status") == "OPEN"
+        )
+        if currently_open:
+            st.info("Vòng đang mở đầu tư. Đóng vòng trước khi tải dữ liệu.")
+        elif is_current_closed or has_closed_history:
+            details, totals = round_export_frames(server_id, selected_cat)
+            st.caption("Dữ liệu được lấy mới từ Supabase khi tải; tệp chi tiết chỉ dành cho giảng viên vì chứa MSSV và họ tên.")
+            if has_closed_history and not is_current_closed:
+                st.caption("Đây là dữ liệu hiện tại của vòng đã đóng trước đó, không phải bản chụp lịch sử bất biến.")
+            name = f"{server_id}_{selected_cat}"
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "⬇️ TẢI GIAO DỊCH (CSV)",
+                    data=details.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"{name}_giao_dich.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with d2:
+                st.download_button(
+                    "⬇️ TẢI XẾP HẠNG (CSV)",
+                    data=totals.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"{name}_ket_qua.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            st.dataframe(totals, hide_index=True, use_container_width=True)
+        else:
+            st.info("Chưa ghi nhận thao tác CLOSE ROUND cho lĩnh vực này.")
 
     # MONITOR
     with tabs[2]:
