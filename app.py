@@ -569,14 +569,14 @@ def teacher_app():
         st.write("**Rules**")
         st.write("• 100M / student")
         st.write("• max 25M / project")
-        st.write("• no same-category investment")
+        st.write("• no investment into your own team project")
         st.write("• category-by-category rounds")
         st.divider()
         if st.button("Đăng xuất"):
             logout()
 
     students = q("students", "*", server_id=server_id)
-    projects = q("projects", "*", server_id=server_id)
+    projects = sorted(q("projects", "*", server_id=server_id), key=lambda p: project_sort_key(server_id, p))
     invs = q("investments", "*", server_id=server_id)
     round_state = get_round(server_id)
 
