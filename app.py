@@ -51,7 +51,12 @@ def project_sort_key(server_id, project):
     return (99, project.get("project_code", ""))
 
 
-BUDGET = 100_000_000
+DEFAULT_BUDGET = 100_000_000
+CLASS_BUDGETS = {"E.032.03_1": 150_000_000}
+
+
+def student_budget(server_id):
+    return CLASS_BUDGETS.get(server_id, DEFAULT_BUDGET)
 MAX_PER_PROJECT = 25_000_000
 
 # =========================
@@ -275,7 +280,8 @@ def student_app():
     my_cat = my_project.get("category") if my_project else None
     invs = student_investments(student["id"])
     spent = sum(float(x.get("amount") or 0) for x in invs)
-    remaining = BUDGET - spent
+    budget = student_budget(server_id)
+    remaining = budget - spent
 
     hero(f"Lớp {server_id} · Investor Console")
     with st.sidebar:
@@ -289,14 +295,14 @@ def student_app():
         st.divider()
         st.write(f"**Đã đầu tư:** {format_money(spent)}")
         st.write(f"**Còn lại:** {format_money(remaining)}")
-        st.progress(min(spent / BUDGET, 1.0))
+        st.progress(max(0.0, min(spent / budget, 1.0)))
         st.divider()
         if st.button("Đăng xuất"):
             logout()
 
     a, b, c = st.columns(3)
     with a:
-        st.markdown(f'<div class="metric-card"><div class="metric-label">Wallet</div><div class="metric-value">{format_money(remaining)}</div><div class="muted">còn lại / 100M</div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><div class="metric-label">Wallet</div><div class="metric-value">{format_money(remaining)}</div><div class="muted">còn lại / {format_money(budget)}</div></div>', unsafe_allow_html=True)
     with b:
         cur = round_state.get("current_category") or "—"
         label = CATEGORY_LABELS.get(cur, cur)
@@ -337,7 +343,7 @@ def student_app():
             with c1:
                 amount_m = st.number_input(
                     f"Đầu tư (triệu) · {p['project_code']}", min_value=0, max_value=25,
-                    value=int(current_amount/1_000_000), step=5, key=f"amt_{p['id']}"
+                    value=int(current_amount/1_000_000), step=1, key=f"amt_{p['id']}"
                 )
             with c2:
                 rationale = st.selectbox(
@@ -353,8 +359,8 @@ def student_app():
                     other_total = spent - current_amount
                     if new_amount > MAX_PER_PROJECT:
                         st.error("Tối đa 25M cho một dự án.")
-                    elif other_total + new_amount > BUDGET:
-                        st.error("Vượt tổng ngân sách 100M.")
+                    elif other_total + new_amount > budget:
+                        st.error(f"Vượt tổng ngân sách {format_money(budget)}.")
                     elif new_amount == 0:
                         if existing:
                             require_db().table("investments").delete().eq("id", existing["id"]).execute()
@@ -567,7 +573,7 @@ def teacher_app():
         st.markdown("### CONTROL ROOM")
         st.caption(f"Lớp tín chỉ {server_id}")
         st.write("**Rules**")
-        st.write("• 100M / student")
+        st.write(f"• {format_money(student_budget(server_id))} / student")
         st.write("• max 25M / project")
         st.write("• no investment into your own team project")
         st.write("• category-by-category rounds")
