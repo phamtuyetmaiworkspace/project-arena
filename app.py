@@ -23,6 +23,34 @@ CATEGORY_ICONS = {
     "Public": "⬡",
     "Social": "✦",
 }
+# Official dates, categories and project order from the final pitching lists.
+PITCHING_SCHEDULE = {
+    "E.032.03_1": [
+        ("10/11/2026", "Public", ["G03", "G04", "G13", "G15"]),
+        ("10/11/2026", "Social", ["G02", "G09", "G10", "G14"]),
+        ("17/11/2026", "Business", ["G01", "G05", "G11", "G16"]),
+        ("17/11/2026", "Communication", ["G06", "G07", "G08", "G12"]),
+    ],
+    "E.032.03_2": [
+        ("10/11/2026", "Communication", ["G03", "G05", "G09"]),
+        ("10/11/2026", "Business", ["G02", "G07", "G08"]),
+        ("17/11/2026", "Public", ["G01", "G10"]),
+        ("17/11/2026", "Social", ["G04", "G06", "G11"]),
+    ],
+}
+
+
+def ordered_categories(server_id):
+    return [c for _, c, _ in PITCHING_SCHEDULE.get(server_id, [])] or CATEGORIES
+
+
+def project_sort_key(server_id, project):
+    for index, (_, _, codes) in enumerate(PITCHING_SCHEDULE.get(server_id, [])):
+        if project.get("project_code") in codes:
+            return (index, codes.index(project["project_code"]))
+    return (99, project.get("project_code", ""))
+
+
 BUDGET = 100_000_000
 MAX_PER_PROJECT = 25_000_000
 
@@ -285,13 +313,14 @@ def student_app():
         return
     if status != "OPEN" or not cur_cat:
         st.info("Investment round hiện chưa mở. Hãy theo dõi hướng dẫn của giảng viên.")
-    elif my_cat == cur_cat:
-        st.warning(f"Bạn thuộc **{CATEGORY_LABELS[my_cat]}**, nên không được đầu tư trong round cùng lĩnh vực này.")
     else:
-        projects = q("projects", "*", server_id=server_id, category=cur_cat)
+        projects = sorted(q("projects", "*", server_id=server_id, category=cur_cat), key=lambda p: project_sort_key(server_id, p))
         if not projects:
             st.warning("Chưa có dự án trong round này.")
         for p in projects:
+            if p["id"] == student.get("project_id"):
+                st.info(f"Không thể đầu tư vào nhóm của mình: {p['project_code']}.")
+                continue
             existing = next((x for x in invs if x["project_id"] == p["id"]), None)
             current_amount = int(float(existing.get("amount") or 0)) if existing else 0
             st.markdown(
@@ -383,7 +412,7 @@ def import_students(server_id, uploaded):
 
 def reciprocal_flags(server_id):
     students = q("students", "*", server_id=server_id)
-    projects = q("projects", "*", server_id=server_id)
+    projects = sorted(q("projects", "*", server_id=server_id), key=lambda p: project_sort_key(server_id, p))
     invs = q("investments", "*", server_id=server_id)
     st_by_id = {s["id"]: s for s in students}
     p_by_id = {p["id"]: p for p in projects}
@@ -566,6 +595,27 @@ def teacher_app():
 
     # SETUP
     with tabs[0]:
+        if PITCHING_SCHEDULE.get(server_id):
+            st.markdown("### Lịch và thứ tự pitching chính thức")
+            group_counts = {}
+            for member in students:
+                if member.get("project_id"):
+                    pid = member["project_id"]
+                    group_counts[pid] = group_counts.get(pid, 0) + 1
+            by_code = {p["project_code"]: p for p in projects}
+            plan = []
+            for day, category, codes in PITCHING_SCHEDULE[server_id]:
+                for number, code in enumerate(codes, 1):
+                    p = by_code.get(code, {})
+                    plan.append({
+                        "Ngày": day, "Lĩnh vực": CATEGORY_LABELS[category],
+                        "Thứ tự": number, "Nhóm": code,
+                        "Tên dự án": p.get("project_name", "Chưa tạo"),
+                        "Số thành viên đã gán": group_counts.get(p.get("id"), 0),
+                    })
+            st.dataframe(pd.DataFrame(plan), hide_index=True, use_container_width=True)
+            st.divider()
+
         st.markdown("### Student import")
         up = st.file_uploader("CSV: student_id, student_name, optional server_id, login_code", type=["csv"])
         if up and st.button("IMPORT / UPDATE STUDENTS", type="primary"):
@@ -574,6 +624,30 @@ def teacher_app():
         if students:
             st.dataframe(pd.DataFrame(students)[["student_id","student_name","project_id"]], hide_index=True, use_container_width=True)
 
+        st.divider()
+        st.markdown("### Kiểm tra thành viên chưa được gán nhóm")
+        unassigned = [s for s in students if not s.get("project_id")]
+        st.metric("Số sinh viên cần xác minh nhóm", len(unassigned))
+        if unassigned and projects:
+            st.warning("Chỉ gán sinh viên sau khi xác minh được nhóm từ danh sách lớp.")
+            student_opts = {f"{x['student_id']} · {x['student_name']}": x for x in unassigned}
+            project_opts = {f"{p['project_code']} · {p['project_name']}": p for p in projects}
+            with st.form("member_assignment"):
+                student_choice = st.selectbox("Sinh viên", list(student_opts.keys()))
+                project_choice = st.selectbox("Nhóm", list(project_opts.keys()))
+                verified = st.checkbox("Đã xác minh thành viên thuộc nhóm này")
+                if st.form_submit_button("GÁN NHÓM", disabled=not verified):
+                    student_to_assign = student_opts[student_choice]
+                    target = project_opts[project_choice]
+                    require_db().table("students").update({"project_id": target["id"]}).eq(
+                        "id", student_to_assign["id"]).eq("server_id", server_id).execute()
+                    log_event(server_id, "TEACHER", "ASSIGN_TEAM", {
+                        "student_id": student_to_assign["student_id"],
+                        "project": target["project_code"],
+                    })
+                    st.rerun()
+            st.dataframe(pd.DataFrame(unassigned)[["student_id", "student_name"]],
+                         hide_index=True, use_container_width=True)
         st.divider()
         st.markdown("### Project & team manager")
         with st.form("new_project"):
@@ -610,9 +684,10 @@ def teacher_app():
     # ROUND CONTROL
     with tabs[1]:
         st.markdown("### Pitching → Investment transition")
+        scheduled = ordered_categories(server_id)
         selected_cat = st.selectbox(
-            "Lĩnh vực", CATEGORIES,
-            index=CATEGORIES.index(round_state["current_category"]) if round_state.get("current_category") in CATEGORIES else 0,
+            "Lĩnh vực", scheduled,
+            index=scheduled.index(round_state["current_category"]) if round_state.get("current_category") in scheduled else 0,
             format_func=lambda x: CATEGORY_LABELS[x]
         )
         st.write("Quy trình khuyến nghị: **PITCHING** → tất cả nhóm trong lĩnh vực pitch xong → **OPEN INVESTMENT** → **CLOSE ROUND** → chuyển lĩnh vực tiếp theo.")
@@ -632,8 +707,8 @@ def teacher_app():
             log_event(server_id,"TEACHER","FINISH_ALL",{}); st.rerun()
 
         st.divider()
-        st.markdown("### Current category projects")
-        cat_projects = [p for p in projects if p["category"] == selected_cat]
+        st.markdown("### Thứ tự pitching trong lĩnh vực")
+        cat_projects = sorted([p for p in projects if p["category"] == selected_cat], key=lambda p: project_sort_key(server_id, p))
         if cat_projects:
             st.dataframe(pd.DataFrame(cat_projects)[["project_code","project_name","one_liner"]], hide_index=True, use_container_width=True)
         else:
