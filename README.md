@@ -4,7 +4,9 @@ A futuristic Streamlit app for project pitching and simulated investment across 
 
 ## Core rules in this MVP
 - 3 independent servers/classes (A, B, C).
-- Each student starts with VND 100,000,000.
+- Class E.032.03_1 (50.1): each student starts with VND 150,000,000.
+- Other classes: each student starts with VND 100,000,000.
+- Investment input increments are VND 1,000,000 across all classes.
 - Four categories: Communication, Business, Public, Social.
 - Pitching is category-by-category.
 - Teacher opens investment only after all projects in the current category finish pitching.
